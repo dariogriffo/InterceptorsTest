@@ -1,28 +1,55 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 
 namespace Common
 {
-    public class SetCorrelationIdInterceptor : Interceptor
+public class CreateCorrelationIdInterceptor : Interceptor
+{
+    public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(TRequest request,
+        ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
     {
-        public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context,
-            AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
+        Trace.CorrelationManager.ActivityId = Trace.CorrelationManager.ActivityId != Guid.Empty ? Trace.CorrelationManager.ActivityId : Guid.NewGuid();
+        Console.WriteLine($"Creating id {Trace.CorrelationManager.ActivityId}");
+        return base.AsyncUnaryCall(request, context, continuation);
+    }
+}
+
+public class SetCorrelationIdInterceptor : Interceptor
+{
+    public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(TRequest request, ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
+    {
+        Console.WriteLine("Setting id");
+        var headers = new Metadata
         {
-            // HERE THE EXCEPTION IS THROWN
-            var entry = new Metadata.Entry("activity-id", Trace.CorrelationManager.ActivityId.ToString());
-            context.Options.Headers.Add(entry);
-            return base.AsyncUnaryCall(request, context, continuation);
+            new Metadata.Entry("activity-id", Trace.CorrelationManager.ActivityId.ToString())
+        };
+
+        if (context.Options.Headers != null)
+        {
+            foreach (var header in context.Options.Headers)
+            {
+                context.Options.Headers.Add(header);
+            }
         }
 
-        public override AsyncServerStreamingCall<TResponse> AsyncServerStreamingCall<TRequest, TResponse>(TRequest request,
-            ClientInterceptorContext<TRequest, TResponse> context, AsyncServerStreamingCallContinuation<TRequest, TResponse> continuation)
-        {
-            var header = context.Options.Headers.FirstOrDefault(x=>x.Key == "activity-id");
-            Trace.CorrelationManager.ActivityId = header != null ? Guid.Parse(header.Value) : Guid.Empty;
-            return base.AsyncServerStreamingCall(request, context, continuation);
-        }
+        var newOptions = context.Options.WithHeaders(headers);
+        var newContext = new ClientInterceptorContext<TRequest, TResponse>(context.Method, context.Host, newOptions);
+        return base.AsyncUnaryCall(request, newContext, continuation);
     }
+
+    public override Task<TResponse> UnaryServerHandler<TRequest, TResponse>(TRequest request, ServerCallContext context,
+        UnaryServerMethod<TRequest, TResponse> continuation)
+    {
+        var header = context.RequestHeaders.First(x => x.Key == "activity-id");
+        Trace.CorrelationManager.ActivityId = Guid.Parse(header.Value);
+        return base.UnaryServerHandler(request, context, continuation);
+    }
+}
 }
